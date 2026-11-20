@@ -17,9 +17,9 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import (QByteArray, QBuffer, QIODevice, QLineF, QMimeData, QStandardPaths,
+from PySide6.QtCore import (QByteArray, QBuffer, QFileSystemWatcher, QIODevice, QLineF, QMimeData, QStandardPaths,
                             QObject, QPointF, QRectF, QSize, Qt, QTimer)
-from PySide6.QtGui import (QAbstractTextDocumentLayout, QAction, QActionGroup,
+from PySide6.QtGui import (QAbstractTextDocumentLayout, QAction, QActionGroup, QCursor,
                            QBrush, QColor, QFont, QFontMetricsF, QIcon, QImage,
                            QKeySequence, QPainter, QPainterPath,
                            QPainterPathStroker, QPalette, QPen, QPixmap,
@@ -38,7 +38,9 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
 
 APP_NAME = "Laqta"
 APP_TITLE = "لقطة"
+APP_VERSION = "1.4"
 IS_WIN = sys.platform == "win32"
+DEV = "--dev" in sys.argv  # وضع المطوّر: بيعيد التشغيل لحاله لما تحفظ الكود
 OWN_MIME = "application/x-laqta"
 APP_DIR = Path(os.getenv("APPDATA") or Path.home() / ".config") / APP_NAME
 CFG_FILE = APP_DIR / "settings.json"
@@ -56,6 +58,8 @@ DEFAULTS = {
     "format": "png",
     "jpg_quality": 92,
     "maximized": True,
+    "transparent": True,   # خلفية شفافة تحت الصورة
+    "backdrop": 35,        # درجة تعتيم الخلفية (0 = شفافة تماماً)
     "always_on_top": False,
     "enter_closes": True,
     "fit_on_open": True,
@@ -175,7 +179,24 @@ def swatch_icon(color, size=18):
     return QIcon(pm)
 
 
+def resource_path(rel):
+    """يشتغل من السورس ومن ملف exe (PyInstaller)."""
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return base / rel
+
+
+_ICON = None
+
+
 def app_icon():
+    global _ICON
+    if _ICON is None:
+        f = resource_path("assets/logo.png")
+        _ICON = QIcon(str(f)) if f.exists() else _fallback_icon()
+    return _ICON
+
+
+def _fallback_icon():
     pm = QPixmap(64, 64)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
@@ -1039,8 +1060,11 @@ class View(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
-        self.setBackgroundBrush(QColor("#16181d"))
+        self.setBackgroundBrush(Qt.NoBrush)
         self.setFrameShape(QFrame.NoFrame)
+        self.setStyleSheet("background:transparent;border:none")
+        self.viewport().setAutoFillBackground(False)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._creating = None
         self._p0 = None
         self._pan = None
@@ -1140,6 +1164,9 @@ class View(QGraphicsView):
             return
         super().wheelEvent(e)
 
+    def drawBackground(self, painter, rect):
+        self.scene().drawBackground(painter, rect)
+
     def drawForeground(self, painter, rect):
         ed = self.ed
         full = rect.united(QRectF(ed.base.rect())).adjusted(-5000, -5000, 5000, 5000)
@@ -1148,7 +1175,9 @@ class View(QGraphicsView):
             path.addRect(full)
             path.addRect(ed.canvas)
             path.setFillRule(Qt.OddEvenFill)
-            painter.fillPath(path, QColor(22, 24, 29, 240))
+            painter.setCompositionMode(QPainter.CompositionMode_Clear)
+            painter.fillPath(path, Qt.black)
+            painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
         if ed.crop_preview is not None:
             c = ed.crop_preview
             path = QPainterPath()
@@ -1170,21 +1199,244 @@ class View(QGraphicsView):
 # ───────────────────────────── editor window ─────────────────────────────
 
 EDITOR_QSS = """
-QMainWindow, QWidget { background:#1f2229; color:#e8e8e8; font-family:'Segoe UI'; font-size:13px; }
-QToolBar { background:#262a33; border:none; spacing:3px; padding:4px; }
-QToolButton { background:transparent; border:1px solid transparent; border-radius:7px; padding:4px 7px; font-size:17px; }
-QToolButton:hover { background:#333845; border-color:#3f4554; }
-QToolButton:checked { background:#6c5ce7; border-color:#7d6ff0; }
-QToolButton#small { font-size:12px; padding:3px 8px; }
-QToolButton#done { background:#2ecc71; color:#0b2615; font-weight:bold; font-size:14px; padding:5px 14px; }
+QWidget { color:#eceef2; font-family:'Segoe UI'; font-size:13px; }
+QGraphicsView { background:transparent; border:none; }
+QFrame#pill { background:rgba(30,33,41,240); border:1px solid rgba(255,255,255,28); border-radius:14px; }
+QToolButton { background:transparent; border:1px solid transparent; border-radius:9px; padding:0; }
+QToolButton:hover { background:rgba(255,255,255,22); border-color:rgba(255,255,255,30); }
+QToolButton:checked { background:#6c5ce7; border-color:#8a7cf5; }
+QToolButton#done { background:#2ecc71; }
 QToolButton#done:hover { background:#44d986; }
-QSpinBox, QComboBox { background:#2d313b; border:1px solid #3f4554; border-radius:5px; padding:2px 4px; min-width:52px; }
-QCheckBox { spacing:5px; }
-QLabel#muted { color:#9aa0ab; }
-QStatusBar { background:#1a1d23; color:#9aa0ab; }
-QMenu { background:#262a33; border:1px solid #3f4554; }
+QToolButton#close:hover { background:#e74c3c; }
+QToolButton::menu-indicator { image:none; width:0; }
+QSpinBox { background:rgba(255,255,255,14); border:1px solid rgba(255,255,255,30); border-radius:6px; padding:2px 4px; min-width:58px; }
+QCheckBox { spacing:5px; background:transparent; }
+QLabel { background:transparent; }
+QLabel#muted { color:#a4aab6; }
+QFrame#sep { background:rgba(255,255,255,30); }
+QMenu { background:#262a33; border:1px solid #3f4554; color:#eceef2; }
+QMenu::item { padding:5px 18px; }
 QMenu::item:selected { background:#6c5ce7; }
+QToolTip { background:#262a33; color:#fff; border:1px solid #6c5ce7; padding:4px; }
 """
+
+ICON_SIZE = 26
+
+
+def make_icon(name, color="#f1f2f6"):
+    """أيقونات مرسومة بالكود: واضحة على أي شاشة ومتمركزة."""
+    S = 48  # مرسومة بدقة مضاعفة
+    pm = QPixmap(S, S)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    c = QColor(color)
+    pen = QPen(c, 3.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.NoBrush)
+    P = QPointF
+
+    def path(*pts, close=False):
+        pp = QPainterPath(P(*pts[0]))
+        for q in pts[1:]:
+            pp.lineTo(P(*q))
+        if close:
+            pp.closeSubpath()
+        return pp
+
+    if name == "select":
+        p.setBrush(c)
+        p.drawPath(path((14, 8), (14, 38), (21, 31), (27, 42), (32, 40), (26, 29), (36, 29), close=True))
+    elif name == "rect":
+        p.drawRoundedRect(QRectF(8, 12, 32, 24), 4, 4)
+    elif name == "ellipse":
+        p.drawEllipse(QRectF(8, 10, 32, 28))
+    elif name == "line":
+        p.drawLine(P(10, 38), P(38, 10))
+    elif name == "arrow":
+        p.drawLine(P(10, 38), P(34, 14))
+        p.setBrush(c)
+        p.drawPath(path((38, 10), (24, 13), (35, 24), close=True))
+    elif name == "pen":
+        pp = QPainterPath(P(8, 34))
+        pp.cubicTo(P(14, 18), P(20, 18), P(24, 28))
+        pp.cubicTo(P(28, 38), P(34, 36), P(40, 16))
+        p.drawPath(pp)
+    elif name == "highlight":
+        hc = QColor("#ffd54f")
+        hc.setAlpha(200)
+        p.setPen(QPen(hc, 10, Qt.SolidLine, Qt.FlatCap))
+        p.drawLine(P(8, 34), P(40, 34))
+        p.setPen(pen)
+        p.drawPath(path((18, 26), (30, 10), (36, 14), (24, 30), close=True))
+    elif name == "text":
+        f = QFont("Segoe UI")
+        f.setBold(True)
+        f.setPixelSize(34)
+        p.setFont(f)
+        p.drawText(QRectF(0, 0, S, S), Qt.AlignCenter, "T")
+    elif name == "balloon":
+        pp = QPainterPath()
+        pp.addRoundedRect(QRectF(7, 9, 34, 22), 7, 7)
+        tail = path((15, 30), (13, 41), (24, 30))
+        p.drawPath(pp.united(tail).simplified())
+    elif name == "step":
+        p.setBrush(c)
+        p.setPen(Qt.NoPen)
+        p.drawEllipse(QRectF(8, 8, 32, 32))
+        f = QFont("Segoe UI")
+        f.setBold(True)
+        f.setPixelSize(22)
+        p.setFont(f)
+        p.setPen(QColor("#1e2129"))
+        p.drawText(QRectF(8, 8, 32, 32), Qt.AlignCenter, "1")
+    elif name == "emoji":
+        p.drawEllipse(QRectF(8, 8, 32, 32))
+        p.setBrush(c)
+        p.drawEllipse(P(18, 20), 2, 2)
+        p.drawEllipse(P(30, 20), 2, 2)
+        p.setBrush(Qt.NoBrush)
+        p.drawArc(QRectF(16, 18, 16, 14), 200 * 16, 140 * 16)
+    elif name == "blur":
+        p.setPen(Qt.NoPen)
+        for r, a in ((16, 50), (12, 90), (8, 160), (4, 255)):
+            cc = QColor(c)
+            cc.setAlpha(a)
+            p.setBrush(cc)
+            p.drawEllipse(P(24, 24), r, r)
+    elif name == "pixel":
+        p.setPen(Qt.NoPen)
+        for i in range(3):
+            for j in range(3):
+                cc = QColor(c)
+                cc.setAlpha(255 if (i + j) % 2 == 0 else 110)
+                p.setBrush(cc)
+                p.drawRect(QRectF(9 + i * 10.5, 9 + j * 10.5, 9.5, 9.5))
+    elif name == "spot":
+        cc = QColor(c)
+        cc.setAlpha(90)
+        p.setBrush(cc)
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(QRectF(6, 8, 36, 32), 5, 5)
+        p.setBrush(c)
+        p.drawEllipse(P(24, 24), 9, 9)
+    elif name == "crop":
+        p.drawPath(path((14, 6), (14, 34), (42, 34)))
+        p.drawPath(path((6, 14), (34, 14), (34, 42)))
+    elif name in ("undo", "redo"):
+        if name == "redo":
+            p.translate(S, 0)
+            p.scale(-1, 1)
+        pp = QPainterPath(P(14, 18))
+        pp.lineTo(P(30, 18))
+        pp.cubicTo(P(44, 18), P(44, 38), P(30, 38))
+        pp.lineTo(P(18, 38))
+        p.drawPath(pp)
+        p.drawPath(path((20, 10), (12, 18), (20, 26)))
+    elif name == "delete":
+        p.drawLine(P(9, 13), P(39, 13))
+        p.drawPath(path((19, 13), (19, 8), (29, 8), (29, 13)))
+        p.drawPath(path((13, 13), (15, 41), (33, 41), (35, 13)))
+        p.drawLine(P(21, 20), P(21, 34))
+        p.drawLine(P(27, 20), P(27, 34))
+    elif name == "copy":
+        p.drawRoundedRect(QRectF(16, 14, 22, 26), 4, 4)
+        p.drawPath(path((10, 32), (10, 8), (30, 8)))
+    elif name == "save":
+        p.drawPath(path((9, 9), (33, 9), (39, 15), (39, 39), (9, 39), close=True))
+        p.drawRect(QRectF(16, 9, 14, 9))
+        p.drawRect(QRectF(15, 27, 18, 12))
+    elif name == "folder":
+        p.drawPath(path((7, 14), (19, 14), (23, 18), (41, 18), (41, 38), (7, 38), close=True))
+    elif name == "settings":
+        p.drawEllipse(P(24, 24), 6, 6)
+        for k in range(8):
+            a = k * math.pi / 4
+            p.drawLine(P(24 + 11 * math.cos(a), 24 + 11 * math.sin(a)),
+                       P(24 + 16 * math.cos(a), 24 + 16 * math.sin(a)))
+        p.drawEllipse(P(24, 24), 11, 11)
+    elif name == "done":
+        p.setPen(QPen(QColor("#0b2615"), 4.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        p.drawPath(path((11, 25), (20, 34), (37, 14)))
+    elif name == "close":
+        p.drawLine(P(14, 14), P(34, 34))
+        p.drawLine(P(34, 14), P(14, 34))
+    elif name == "fit":
+        for (x, y, dx, dy) in ((8, 8, 1, 1), (40, 8, -1, 1), (8, 40, 1, -1), (40, 40, -1, -1)):
+            p.drawPath(path((x, y + 10 * dy), (x, y), (x + 10 * dx, y)))
+    elif name == "zoom1":
+        f = QFont("Segoe UI")
+        f.setBold(True)
+        f.setPixelSize(20)
+        p.setFont(f)
+        p.drawText(QRectF(0, 0, S, S), Qt.AlignCenter, "1:1")
+    p.end()
+    pm.setDevicePixelRatio(2)
+    return QIcon(pm)
+
+
+def vsep():
+    f = QFrame()
+    f.setObjectName("sep")
+    f.setFixedSize(1, 26)
+    return f
+
+
+class Pill(QFrame):
+    """شريط بزوايا مدوّرة، بيتوسّط لحاله."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("pill")
+        self.lay = QHBoxLayout(self)
+        self.lay.setContentsMargins(8, 5, 8, 5)
+        self.lay.setSpacing(3)
+        eff = QGraphicsDropShadowEffect(self)
+        eff.setBlurRadius(18)
+        eff.setOffset(0, 3)
+        eff.setColor(QColor(0, 0, 0, 120))
+        self.setGraphicsEffect(eff)
+
+    def add(self, w):
+        self.lay.addWidget(w)
+        return w
+
+
+def centered(widget):
+    row = QHBoxLayout()
+    row.setContentsMargins(0, 0, 0, 0)
+    row.addStretch(1)
+    row.addWidget(widget)
+    row.addStretch(1)
+    return row
+
+
+def icon_button(name, tip, checkable=False, obj=None, size=40):
+    b = QToolButton()
+    b.setIcon(make_icon(name))
+    b.setIconSize(QSize(ICON_SIZE, ICON_SIZE))
+    b.setFixedSize(size, size)
+    b.setToolTip(tip)
+    b.setCheckable(checkable)
+    b.setToolButtonStyle(Qt.ToolButtonIconOnly)
+    b.setCursor(Qt.PointingHandCursor)
+    if obj:
+        b.setObjectName(obj)
+    return b
+
+
+class Scene(QGraphicsScene):
+    def __init__(self, ed):
+        super().__init__(ed)
+        self.ed = ed
+
+    def drawBackground(self, painter, rect):
+        ed = self.ed
+        painter.save()
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        painter.setClipRect(ed.canvas)
+        painter.drawImage(QPointF(0, 0), ed.base)
+        painter.restore()
 
 
 class Editor(QMainWindow):
@@ -1192,10 +1444,16 @@ class Editor(QMainWindow):
         super().__init__()
         self.app = app
         self.cfg = app.cfg
-        self.setWindowTitle(f"{APP_TITLE} — {img.width()}×{img.height()}")
+        self.transparent = bool(self.cfg.get("transparent", True))
+        self.setWindowTitle(f"{APP_TITLE} {APP_VERSION} — {img.width()}×{img.height()}")
         self.setWindowIcon(app_icon())
         self.setStyleSheet(EDITOR_QSS)
         self.setAttribute(Qt.WA_DeleteOnClose)
+        if self.transparent:
+            self.setWindowFlag(Qt.FramelessWindowHint, True)
+            self.setAttribute(Qt.WA_TranslucentBackground, True)
+        else:
+            self.setStyleSheet(EDITOR_QSS + "QMainWindow{background:#16181d}")
 
         self.base = img.convertToFormat(QImage.Format_ARGB32_Premultiplied)
         self.canvas = QRectF(self.base.rect())
@@ -1205,13 +1463,20 @@ class Editor(QMainWindow):
         self._z = 10
         self.props = {k: self.cfg[k] for k in ("color", "fill", "width", "font_size", "shadow", "strength", "emoji")}
 
-        self.scene = QGraphicsScene(self)
+        # الصورة الأصلية بترسم كخلفية للمشهد (مش عنصر) — ما في إشي يقدر يمسحها
+        self.scene = Scene(self)
         self.scene.setSceneRect(self.canvas)
-        bg = self.scene.addPixmap(QPixmap.fromImage(self.base))
-        bg.setZValue(-100)
-        bg.setTransformationMode(Qt.SmoothTransformation)
         self.view = View(self)
-        self.setCentralWidget(self.view)
+
+        root = QWidget()
+        root.setObjectName("root")
+        c = self.backdrop()
+        root.setStyleSheet(f"QWidget#root{{background:rgba({c.red()},{c.green()},{c.blue()},{c.alpha()})}}")
+        v = QVBoxLayout(root)
+        v.setContentsMargins(0, 10, 0, 10)
+        v.setSpacing(6)
+        self.root_layout = v
+        self.setCentralWidget(root)
 
         self.undo = QUndoStack(self)
         self.undo.indexChanged.connect(self.schedule_export)
@@ -1224,89 +1489,103 @@ class Editor(QMainWindow):
             self.file_path = Path(self.cfg["save_dir"]) / name
 
         self.build_toolbars()
+        v.addWidget(self.view, 1)
         self.build_status()
         self.scene.selectionChanged.connect(self.on_selection)
         self.set_tool(self.cfg.get("last_tool", "rect"))
         if not path and self.cfg["auto_save"]:
             self.save_to(self.file_path, self.base)
 
+    def backdrop(self):
+        if not self.transparent:
+            return QColor("#16181d")
+        a = int(255 * int(self.cfg.get("backdrop", 35)) / 100)
+        return QColor(10, 12, 16, max(1, a))  # 1 عشان الكبسات ما تعدّي للي ورا
+
     # ---------- UI ----------
     def build_toolbars(self):
-        tb = QToolBar("أدوات")
-        tb.setMovable(False)
-        tb.setIconSize(QSize(18, 18))
-        self.addToolBar(Qt.TopToolBarArea, tb)
+        # الصف الأول: الأدوات + الأوامر
+        top = Pill()
         self.tool_group = QActionGroup(self)
         self.tool_actions = {}
         for tid, glyph, name, key in TOOLS:
-            a = QAction(glyph, self, checkable=True)
+            b = icon_button(tid, f"{name}  ({key})", checkable=True)
+            a = QAction(self, checkable=True)
+            self.tool_group.addAction(a)
+            b.setDefaultAction(a)
+            b.setIcon(make_icon(tid))
+            a.setIcon(make_icon(tid))
             a.setToolTip(f"{name}  ({key})")
             a.triggered.connect(lambda _=False, t=tid: self.set_tool(t))
-            self.tool_group.addAction(a)
-            tb.addAction(a)
+            top.add(b)
             self.tool_actions[tid] = a
             if tid in ("select", "highlight", "emoji", "spot"):
-                tb.addSeparator()
+                top.add(vsep())
+        top.add(vsep())
 
-        spacer = QWidget()
-        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        tb.addWidget(spacer)
-
-        def act(glyph, tip, fn, shortcut=None):
-            a = QAction(glyph, self)
-            a.setToolTip(tip + (f"  ({shortcut})" if shortcut else ""))
-            a.triggered.connect(fn)
+        def cmd(name, tip, fn, shortcut=None, obj=None):
+            b = icon_button(name, tip + (f"  ({shortcut})" if shortcut else ""), obj=obj)
+            b.clicked.connect(fn)
             if shortcut:
+                a = QAction(self)
                 a.setShortcut(QKeySequence(shortcut))
-            tb.addAction(a)
-            return a
+                a.triggered.connect(fn)
+                self.addAction(a)
+            top.add(b)
+            return b
 
-        act("↶", "تراجع", self.undo.undo, "Ctrl+Z")
-        act("↷", "إعادة", self.undo.redo, "Ctrl+Y")
+        cmd("undo", "تراجع", self.undo.undo, "Ctrl+Z")
+        cmd("redo", "إعادة", self.undo.redo, "Ctrl+Y")
         a = QAction(self)
         a.setShortcut(QKeySequence("Ctrl+Shift+Z"))
         a.triggered.connect(self.undo.redo)
         self.addAction(a)
-        act("🗑", "حذف المحدد  (Delete)", self.delete_selected)
-        tb.addSeparator()
-        act("📋", "نسخ للحافظة", self.copy_now, "Ctrl+C")
-        act("💾", "حفظ باسم…", self.save_as, "Ctrl+S")
-        act("📁", "افتح فولدر الصور", self.app.open_folder)
-        act("⚙", "الإعدادات", self.app.show_settings)
-        done = QToolButton()
-        done.setObjectName("done")
-        done.setText("✔ تم")
-        done.setToolTip("نسخ وإغلاق  (Enter)")
-        done.clicked.connect(self.finish)
-        tb.addWidget(done)
+        cmd("delete", "حذف المحدد  (Delete)", self.delete_selected)
+        top.add(vsep())
+        cmd("copy", "نسخ للحافظة", self.copy_now, "Ctrl+C")
+        cmd("save", "حفظ باسم…", self.save_as, "Ctrl+S")
+        cmd("folder", "افتح فولدر الصور", self.app.open_folder)
+        cmd("settings", "الإعدادات", self.app.show_settings)
+        top.add(vsep())
+        cmd("done", "نسخ وإغلاق  (Enter)", self.finish, obj="done")
+        cmd("close", "إغلاق  (Esc)", self.close, obj="close")
+        self.root_layout.addLayout(centered(top))
 
-        self.addToolBarBreak()
-        ob = QToolBar("خيارات")
-        ob.setMovable(False)
-        self.addToolBar(Qt.TopToolBarArea, ob)
-        self.opt_actions = {}
+        # الصف الثاني: الخيارات
+        ob = Pill()
+        self.opt_widgets = {}
 
         def label(t):
             l = QLabel(t)
             l.setObjectName("muted")
             return l
 
-        ob.addWidget(label(" اللون "))
+        def group(key, *widgets):
+            self.opt_widgets[key] = list(widgets)
+            for w in widgets:
+                ob.add(w)
+
         self.color_btn = QToolButton()
-        self.color_btn.setToolTip("اختار لون")
+        self.color_btn.setFixedSize(32, 32)
+        self.color_btn.setIconSize(QSize(22, 22))
+        self.color_btn.setToolTip("اختار أي لون")
         self.color_btn.clicked.connect(lambda: self.pick_color("color"))
-        ob.addWidget(self.color_btn)
+        ob.add(self.color_btn)
         for c in PALETTE:
             b = QToolButton()
-            b.setFixedSize(20, 20)
-            b.setStyleSheet(f"QToolButton{{background:{c};border:1px solid #555;border-radius:10px;padding:0}}"
+            b.setFixedSize(22, 22)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setToolTip(c)
+            b.setStyleSheet(f"QToolButton{{background:{c};border:2px solid rgba(255,255,255,60);border-radius:11px}}"
                             f"QToolButton:hover{{border:2px solid white}}")
             b.clicked.connect(lambda _=False, c=c: self.set_prop("color", c))
-            ob.addWidget(b)
-        ob.addSeparator()
+            ob.add(b)
+        ob.add(vsep())
 
-        ob.addWidget(label(" تعبئة "))
         self.fill_btn = QToolButton()
+        self.fill_btn.setFixedSize(32, 32)
+        self.fill_btn.setIconSize(QSize(22, 22))
+        self.fill_btn.setToolTip("التعبئة")
         self.fill_btn.setPopupMode(QToolButton.InstantPopup)
         m = QMenu(self.fill_btn)
         m.addAction("بدون تعبئة", lambda: self.set_prop("fill", "#00000000"))
@@ -1319,28 +1598,27 @@ class Editor(QMainWindow):
                         lambda c=fc.name(QColor.HexArgb): self.set_prop("fill", c))
             m.addAction(swatch_icon(c), "كامل", lambda c=c: self.set_prop("fill", c))
         self.fill_btn.setMenu(m)
-        ob.addWidget(self.fill_btn)
-        ob.addSeparator()
+        ob.add(label(" تعبئة"))
+        ob.add(self.fill_btn)
 
         self.width_spin = QSpinBox(minimum=1, maximum=40, suffix=" px")
         self.width_spin.setToolTip("سُمك الخط")
         self.width_spin.valueChanged.connect(lambda v: self.set_prop("width", v))
-        self.opt_actions["width_l"] = ob.addWidget(label(" السُمك "))
-        self.opt_actions["width"] = ob.addWidget(self.width_spin)
+        group("width", vsep(), label(" السُمك"), self.width_spin)
 
         self.font_spin = QSpinBox(minimum=8, maximum=200)
         self.font_spin.setToolTip("حجم الخط / الإيموجي")
         self.font_spin.valueChanged.connect(lambda v: self.set_prop("font_size", v))
-        self.opt_actions["font_l"] = ob.addWidget(label(" حجم الخط "))
-        self.opt_actions["font"] = ob.addWidget(self.font_spin)
+        group("font", vsep(), label(" حجم الخط"), self.font_spin)
 
         self.strength_spin = QSpinBox(minimum=2, maximum=60)
         self.strength_spin.setToolTip("قوة التغبيش / حجم البكسل")
         self.strength_spin.valueChanged.connect(lambda v: self.set_prop("strength", v))
-        self.opt_actions["strength_l"] = ob.addWidget(label(" القوة "))
-        self.opt_actions["strength"] = ob.addWidget(self.strength_spin)
+        group("strength", vsep(), label(" القوة"), self.strength_spin)
 
         self.emoji_btn = QToolButton()
+        self.emoji_btn.setFixedSize(36, 32)
+        self.emoji_btn.setStyleSheet("font-size:20px")
         self.emoji_btn.setPopupMode(QToolButton.InstantPopup)
         em = QMenu(self.emoji_btn)
         grid_w = QWidget()
@@ -1349,51 +1627,51 @@ class Editor(QMainWindow):
         for i, ch in enumerate(EMOJIS):
             b = QToolButton()
             b.setText(ch)
-            b.setStyleSheet("font-size:20px;padding:2px")
+            b.setFixedSize(36, 36)
+            b.setStyleSheet("font-size:20px")
             b.clicked.connect(lambda _=False, ch=ch: (self.set_prop("emoji", ch), em.close()))
             grid.addWidget(b, i // 8, i % 8)
         wa = QWidgetAction(em)
         wa.setDefaultWidget(grid_w)
         em.addAction(wa)
         self.emoji_btn.setMenu(em)
-        self.opt_actions["emoji_l"] = ob.addWidget(label(" الإيموجي "))
-        self.opt_actions["emoji"] = ob.addWidget(self.emoji_btn)
+        group("emoji", vsep(), label(" الإيموجي"), self.emoji_btn)
 
-        ob.addSeparator()
+        ob.add(vsep())
         self.shadow_chk = QCheckBox("ظل")
         self.shadow_chk.toggled.connect(lambda v: self.set_prop("shadow", v))
-        ob.addWidget(self.shadow_chk)
-
-        sp2 = QWidget()
-        sp2.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        ob.addWidget(sp2)
+        ob.add(self.shadow_chk)
+        ob.add(vsep())
         self.zoom_lbl = label("100%")
-        ob.addWidget(self.zoom_lbl)
-        for txt, tip, fn in (("⤢", "ملاءمة للشاشة  (Ctrl+0)", self.fit), ("1:1", "الحجم الحقيقي", self.actual_size)):
-            b = QToolButton()
-            b.setObjectName("small")
-            b.setText(txt)
-            b.setToolTip(tip)
+        self.zoom_lbl.setFixedWidth(44)
+        self.zoom_lbl.setAlignment(Qt.AlignCenter)
+        ob.add(self.zoom_lbl)
+        for name, tip, fn in (("fit", "ملاءمة للشاشة  (Ctrl+0)", self.fit), ("zoom1", "الحجم الحقيقي", self.actual_size)):
+            b = icon_button(name, tip, size=34)
             b.clicked.connect(fn)
-            ob.addWidget(b)
+            ob.add(b)
         a = QAction(self)
         a.setShortcut(QKeySequence("Ctrl+0"))
         a.triggered.connect(self.fit)
         self.addAction(a)
+        self.root_layout.addLayout(centered(ob))
         self.load_props_ui(self.props)
 
     def build_status(self):
-        sb = self.statusBar()
-        self.status_lbl = QLabel("جاهز")
-        sb.addWidget(self.status_lbl, 1)
-        self.path_lbl = QLabel()
-        self.path_lbl.setObjectName("muted")
-        self.path_lbl.setText(f"{self.base.width()}×{self.base.height()}   •   " +
-                              (str(self.file_path) if self.cfg["auto_save"] else "الحفظ التلقائي مطفي"))
-        sb.addPermanentWidget(self.path_lbl)
-        hint = QLabel("Shift = خطوط مستقيمة/مربع   •   Ctrl+عجلة = زوم   •   زر الماوس الأوسط = تحريك الصورة")
+        st = Pill()
+        st.lay.setContentsMargins(14, 4, 14, 4)
+        self.status_lbl = QLabel("جاهز ✓  أي تعديل بيتنسخ للحافظة لحاله")
+        st.add(self.status_lbl)
+        st.add(vsep())
+        path_lbl = QLabel(f"{self.base.width()}×{self.base.height()}   •   v{APP_VERSION}")
+        path_lbl.setObjectName("muted")
+        path_lbl.setToolTip(str(self.file_path) if self.cfg["auto_save"] else "الحفظ التلقائي مطفي")
+        st.add(path_lbl)
+        st.add(vsep())
+        hint = QLabel("Shift = مستقيم/مربع  •  Ctrl+عجلة = زوم  •  الزر الأوسط = تحريك")
         hint.setObjectName("muted")
-        sb.addPermanentWidget(hint)
+        st.add(hint)
+        self.root_layout.addLayout(centered(st))
 
     def load_props_ui(self, props):
         for w in (self.width_spin, self.font_spin, self.strength_spin, self.shadow_chk):
@@ -1404,8 +1682,8 @@ class Editor(QMainWindow):
         self.shadow_chk.setChecked(bool(props.get("shadow", True)))
         for w in (self.width_spin, self.font_spin, self.strength_spin, self.shadow_chk):
             w.blockSignals(False)
-        self.color_btn.setIcon(swatch_icon(props.get("color", "#e53935")))
-        self.fill_btn.setIcon(swatch_icon(props.get("fill", "#00000000")))
+        self.color_btn.setIcon(swatch_icon(props.get("color", "#e53935"), 22))
+        self.fill_btn.setIcon(swatch_icon(props.get("fill", "#00000000"), 22))
         self.emoji_btn.setText(props.get("emoji", "😀"))
 
     def update_option_visibility(self):
@@ -1416,9 +1694,9 @@ class Editor(QMainWindow):
             "strength": t in ("blur", "pixel"),
             "emoji": t in ("emoji",),
         }
-        for k, v in show.items():
-            self.opt_actions[k].setVisible(v)
-            self.opt_actions[k + "_l"].setVisible(v)
+        for k, vis in show.items():
+            for w in self.opt_widgets[k]:
+                w.setVisible(vis)
 
     # ---------- tools ----------
     def set_tool(self, t):
@@ -1662,11 +1940,13 @@ class Editor(QMainWindow):
 
     # ---------- window ----------
     def present(self):
-        if self.cfg["maximized"]:
-            self.showMaximized()
+        scr = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        g = scr.availableGeometry()
+        if self.transparent or self.cfg["maximized"]:
+            self.setGeometry(g)
+            self.show() if self.transparent else self.showMaximized()
         else:
-            scr = QApplication.primaryScreen().availableGeometry()
-            self.resize(int(scr.width() * 0.8), int(scr.height() * 0.8))
+            self.resize(int(g.width() * 0.8), int(g.height() * 0.8))
             self.show()
         self.raise_()
         self.activateWindow()
@@ -1721,7 +2001,14 @@ class SettingsDialog(QDialog):
         self.setWindowIcon(app_icon())
         self.setLayoutDirection(Qt.RightToLeft)
         self.setMinimumWidth(520)
-        self.setStyleSheet(EDITOR_QSS + "QTabWidget::pane{border:1px solid #3f4554;border-radius:6px}"
+        self.setStyleSheet(EDITOR_QSS + "QDialog{background:#1f2229}"
+                           "QTabWidget::pane{border:1px solid #3f4554;border-radius:6px;background:#23262e}"
+                           "QTabWidget>QWidget>QWidget{background:#23262e}"
+                           "QComboBox{background:#2d313b;border:1px solid #3f4554;border-radius:5px;padding:4px 8px}"
+                           "QComboBox QAbstractItemView{background:#262a33;color:#eceef2;selection-background-color:#6c5ce7}"
+                           "QSpinBox{background:#2d313b}"
+                           "QCheckBox::indicator{width:16px;height:16px;border:1px solid #6b7180;border-radius:4px;background:#2d313b}"
+                           "QCheckBox::indicator:checked{background:#6c5ce7;border-color:#8a7cf5}"
                            "QTabBar::tab{background:#262a33;padding:7px 16px}"
                            "QTabBar::tab:selected{background:#6c5ce7}"
                            "QLineEdit{background:#2d313b;border:1px solid #3f4554;border-radius:5px;padding:4px}"
@@ -1775,7 +2062,12 @@ class SettingsDialog(QDialog):
         # المحرر
         g = QWidget()
         f = QFormLayout(g)
-        for key, text in (("maximized", "افتح المحرر بملء الشاشة"),
+        self.w["transparent"] = QCheckBox("خلفية شفافة تحت الصورة (بيبيّن اللي وراها)", checked=bool(cfg["transparent"]))
+        f.addRow(self.w["transparent"])
+        bd = QSlider(Qt.Horizontal, minimum=0, maximum=90, value=int(cfg["backdrop"]))
+        self.w["backdrop"] = bd
+        f.addRow("تعتيم الخلفية:", bd)
+        for key, text in (("maximized", "افتح المحرر بملء الشاشة (لو الشفافية مطفية)"),
                           ("fit_on_open", "صغّر الصورة لتناسب الشاشة"),
                           ("always_on_top", "المحرر دايماً فوق كل الشبابيك"),
                           ("enter_closes", "Enter = نسخ وإغلاق")):
@@ -1889,9 +2181,10 @@ class KeyWatcher(QObject):
 
 
 class LaqtaApp(QObject):
-    def __init__(self, qapp):
+    def __init__(self, qapp, server=None):
         super().__init__()
         self.qapp = qapp
+        self.server = server
         self.cfg = Config()
         self.editors = []
         self.paused = False
@@ -1902,13 +2195,16 @@ class LaqtaApp(QObject):
         self.clip_timer = QTimer(self, singleShot=True, interval=150, timeout=self.check_clipboard)
         self.clip.dataChanged.connect(self.clip_timer.start)
         self.build_tray()
-        set_startup(self.cfg["start_with_windows"])
+        if not DEV:  # ما بنسجّل نسخة التطوير بتشغيل Windows
+            set_startup(self.cfg["start_with_windows"])
         self.cfg.save()
+        if DEV:
+            self.setup_dev_watcher()
 
     # ---------- tray ----------
     def build_tray(self):
         self.tray = QSystemTrayIcon(app_icon(), self)
-        self.tray.setToolTip(f"{APP_TITLE} — شغّالة. صوّر بـ Win+Shift+S")
+        self.tray.setToolTip(f"{APP_TITLE} v{APP_VERSION} — شغّالة. صوّر بـ Win+Shift+S")
         m = QMenu()
         m.setLayoutDirection(Qt.RightToLeft)
         m.setStyleSheet(EDITOR_QSS)
@@ -1920,6 +2216,7 @@ class LaqtaApp(QObject):
         m.addSeparator()
         self.pause_act = m.addAction("⏸  إيقاف مؤقت", self.toggle_pause)
         m.addAction("⚙  الإعدادات", self.show_settings)
+        m.addAction("🔄  إعادة تشغيل", self.restart)
         m.addSeparator()
         m.addAction("✖  خروج", self.quit)
         self.tray.setContextMenu(m)
@@ -1927,7 +2224,7 @@ class LaqtaApp(QObject):
                                     if r == QSystemTrayIcon.DoubleClick else None)
         self.tray.show()
         if self.cfg["notify"]:
-            self.tray.showMessage(APP_TITLE, "شغّالة بالخلفية ✓  صوّر بـ Win+Shift+S وبيفتحلك المحرر",
+            self.tray.showMessage(f"{APP_TITLE} v{APP_VERSION}", "شغّالة بالخلفية ✓  صوّر بـ Win+Shift+S وبيفتحلك المحرر",
                                   app_icon(), 3500)
 
     def fill_recent(self):
@@ -2013,6 +2310,53 @@ class LaqtaApp(QObject):
             self.cfg.save()
             set_startup(self.cfg["start_with_windows"])
 
+    # ---------- dev mode ----------
+    def setup_dev_watcher(self):
+        self.src = str(Path(__file__).resolve())
+        self.watcher_fs = QFileSystemWatcher([self.src], self)
+        self.reload_timer = QTimer(self, singleShot=True, interval=500, timeout=self.restart)
+        self.watcher_fs.fileChanged.connect(self.on_source_changed)
+        self.tray.setToolTip(f"{APP_TITLE} v{APP_VERSION} — وضع المطوّر 🔧 (بيعيد التشغيل لما تحفظ)")
+        print(f"[dev] watching {self.src}  — save the file and Laqta restarts by itself")
+
+    def on_source_changed(self, path):
+        # بعض المحررات بتحذف الملف وبتكتبه من جديد، فبنرجع نراقبه
+        if path not in self.watcher_fs.files() and Path(path).exists():
+            self.watcher_fs.addPath(path)
+        self.reload_timer.start()
+
+    def restart(self):
+        import py_compile
+        import subprocess
+        src = str(Path(__file__).resolve())
+        if not getattr(sys, "frozen", False):
+            try:
+                py_compile.compile(src, doraise=True)
+            except py_compile.PyCompileError as e:
+                msg = str(e).strip().splitlines()[-1][:250]
+                print("[dev] syntax error, not restarting:\n", e)
+                self.tray.showMessage("في خطأ بالكود — ما أعدت التشغيل", msg, QSystemTrayIcon.Warning, 6000)
+                return
+        args = [a for a in sys.argv[1:] if a != "--open"]
+        if "--open" in sys.argv:  # شيل مسار الصورة القديم
+            i = sys.argv.index("--open")
+            args = sys.argv[1:i] + sys.argv[i + 2:]
+        if self.editors:  # بنرجع نفتح آخر صورة كانت مفتوحة عشان تشوف تعديلك فوراً
+            tmp = APP_DIR / "dev_last.png"
+            APP_DIR.mkdir(parents=True, exist_ok=True)
+            self.editors[-1].base.save(str(tmp))
+            args += ["--open", str(tmp)]
+        for ed in list(self.editors):
+            ed.close()
+        self.cfg.save()
+        if self.server is not None:
+            self.server.close()
+        cmd = [sys.executable] + ([] if getattr(sys, "frozen", False) else [src]) + args
+        print("[dev] restarting…")
+        subprocess.Popen(cmd, cwd=os.getcwd())
+        self.tray.hide()
+        self.qapp.quit()
+
     def quit(self):
         for ed in list(self.editors):
             ed.close()
@@ -2032,24 +2376,43 @@ def main():
     qapp.setQuitOnLastWindowClosed(False)
     qapp.setWindowIcon(app_icon())
 
-    # نسخة وحدة بس
+    # نسخة وحدة بس: لو في نسخة قديمة شغّالة، بنسكّرها ونشتغل إحنا مكانها
     sock = QLocalSocket()
     sock.connectToServer("LaqtaSingleInstance")
     if sock.waitForConnected(300):
-        sock.write(b"settings")
+        sock.write(b"quit")
         sock.flush()
         sock.waitForBytesWritten(300)
-        return 0
+        sock.disconnectFromServer()
+        old_gone = False
+        for _ in range(30):
+            time.sleep(0.1)
+            probe = QLocalSocket()
+            probe.connectToServer("LaqtaSingleInstance")
+            if not probe.waitForConnected(100):
+                old_gone = True
+                break
+            probe.abort()
+        if not old_gone:
+            QMessageBox.warning(None, APP_TITLE,
+                                "في نسخة قديمة من لقطة لسا شغّالة.\n"
+                                "كليك يمين على أيقونتها جنب الساعة ← خروج، وبعدين شغّل البرنامج من جديد.")
+            return 0
     server = QLocalServer()
     QLocalServer.removeServer("LaqtaSingleInstance")
     server.listen("LaqtaSingleInstance")
 
-    app = LaqtaApp(qapp)
+    app = LaqtaApp(qapp, server)
 
     def on_conn():
         c = server.nextPendingConnection()
         c.waitForReadyRead(300)
-        app.show_settings()
+        msg = bytes(c.readAll())
+        if msg.startswith(b"quit"):
+            server.close()
+            app.quit()
+        else:
+            app.show_settings()
     server.newConnection.connect(on_conn)
 
     if "--open" in sys.argv:  # للتجربة: python laqta.py --open صورة.png
