@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
 
 APP_NAME = "Laqta"
 APP_TITLE = "لقطة"
-APP_VERSION = "1.4"
+APP_VERSION = "1.4.1"
 IS_WIN = sys.platform == "win32"
 DEV = "--dev" in sys.argv  # وضع المطوّر: بيعيد التشغيل لحاله لما تحفظ الكود
 OWN_MIME = "application/x-laqta"
@@ -2204,7 +2204,7 @@ class LaqtaApp(QObject):
     # ---------- tray ----------
     def build_tray(self):
         self.tray = QSystemTrayIcon(app_icon(), self)
-        self.tray.setToolTip(f"{APP_TITLE} v{APP_VERSION} — شغّالة. صوّر بـ Win+Shift+S")
+        self.update_tooltip()
         m = QMenu()
         m.setLayoutDirection(Qt.RightToLeft)
         m.setStyleSheet(EDITOR_QSS)
@@ -2226,6 +2226,16 @@ class LaqtaApp(QObject):
         if self.cfg["notify"]:
             self.tray.showMessage(f"{APP_TITLE} v{APP_VERSION}", "شغّالة بالخلفية ✓  صوّر بـ Win+Shift+S وبيفتحلك المحرر",
                                   app_icon(), 3500)
+
+    def update_tooltip(self):
+        """رقم النسخة لازم يضل بالـ tooltip دايماً — منه بنعرف إذا في نسخة قديمة شغّالة."""
+        if self.paused:
+            state = "موقّفة مؤقتاً"
+        elif DEV:
+            state = "وضع المطوّر 🔧 (بيعيد التشغيل لما تحفظ)"
+        else:
+            state = "شغّالة. صوّر بـ Win+Shift+S"
+        self.tray.setToolTip(f"{APP_TITLE} v{APP_VERSION} — {state}")
 
     def fill_recent(self):
         self.recent_menu.clear()
@@ -2299,7 +2309,7 @@ class LaqtaApp(QObject):
     def toggle_pause(self):
         self.paused = not self.paused
         self.pause_act.setText("▶  تشغيل" if self.paused else "⏸  إيقاف مؤقت")
-        self.tray.setToolTip(f"{APP_TITLE} — " + ("موقّفة مؤقتاً" if self.paused else "شغّالة"))
+        self.update_tooltip()
 
     def show_settings(self):
         dlg = SettingsDialog(self.cfg)
@@ -2316,7 +2326,7 @@ class LaqtaApp(QObject):
         self.watcher_fs = QFileSystemWatcher([self.src], self)
         self.reload_timer = QTimer(self, singleShot=True, interval=500, timeout=self.restart)
         self.watcher_fs.fileChanged.connect(self.on_source_changed)
-        self.tray.setToolTip(f"{APP_TITLE} v{APP_VERSION} — وضع المطوّر 🔧 (بيعيد التشغيل لما تحفظ)")
+        self.update_tooltip()
         print(f"[dev] watching {self.src}  — save the file and Laqta restarts by itself")
 
     def on_source_changed(self, path):
